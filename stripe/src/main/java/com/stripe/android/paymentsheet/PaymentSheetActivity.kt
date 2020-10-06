@@ -1,5 +1,6 @@
 package com.stripe.android.paymentsheet
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import androidx.activity.viewModels
@@ -10,8 +11,14 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_HIDDEN
 import com.google.android.material.snackbar.Snackbar
+import com.stripe.android.ApiResultCallback
+import com.stripe.android.PaymentConfiguration
+import com.stripe.android.PaymentIntentResult
 import com.stripe.android.R
+import com.stripe.android.Stripe
 import com.stripe.android.databinding.ActivityCheckoutBinding
+import com.stripe.android.model.ConfirmPaymentIntentParams
+import com.stripe.android.paymentsheet.model.PaymentSelection
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -24,6 +31,14 @@ internal class PaymentSheetActivity : AppCompatActivity() {
     }
     private val viewModel by viewModels<PaymentSheetViewModel> {
         PaymentSheetViewModel.Factory(application)
+    }
+    private val stripe: Stripe by lazy {
+        val paymentConfiguration = PaymentConfiguration.getInstance(this)
+        Stripe(
+            applicationContext,
+            publishableKey = paymentConfiguration.publishableKey,
+            stripeAccountId = paymentConfiguration.stripeAccountId
+        )
     }
 
     private val fragmentContainerId: Int
@@ -44,10 +59,7 @@ internal class PaymentSheetActivity : AppCompatActivity() {
         }
 
         setupBottomSheet()
-
-        viewModel.selection.observe(this) {
-            viewBinding.buyButton.isEnabled = it != null
-        }
+        setupBuyButton()
 
         // TODO: Add loading state
         supportFragmentManager.commit {
@@ -68,6 +80,63 @@ internal class PaymentSheetActivity : AppCompatActivity() {
                         replace(fragmentContainerId, PaymentSheetAddCardFragment())
                     }
                 }
+            }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+
+        stripe.onPaymentResult(
+            requestCode, data,
+            object : ApiResultCallback<PaymentIntentResult> {
+                override fun onSuccess(result: PaymentIntentResult) {
+                    // TODO(smaskell): Communicate result
+                    animateOut()
+                }
+
+                override fun onError(e: Exception) {
+                    viewModel.onError(e)
+                }
+            }
+        )
+    }
+
+    private fun setupBuyButton() {
+        // TOOD(smaskell): Set text based on currency & amount in payment intent
+        viewModel.selection.observe(this) {
+            // TODO(smaskell): show Google Pay button when GooglePay selected
+            viewBinding.buyButton.isEnabled = it != null
+        }
+        viewBinding.buyButton.setOnClickListener {
+            val args: PaymentSheetActivityStarter.Args? = PaymentSheetActivityStarter.Args.fromIntent(intent)
+            if (args == null) {
+                viewModel.onError(IllegalStateException("Missing activity args"))
+                return@setOnClickListener
+            }
+            // TODO(smaskell): Show processing indicator
+            when (val selection = viewModel.selection.value) {
+                PaymentSelection.GooglePay -> TODO("smaskell: handle Google Pay confirmation")
+                is PaymentSelection.Saved -> {
+                    // TODO(smaskell): Properly set savePaymentMethod/setupFutureUsage
+                    stripe.confirmPayment(
+                        this,
+                        ConfirmPaymentIntentParams.createWithPaymentMethodId(
+                            selection.paymentMethodId,
+                            args.clientSecret
+                        )
+                    )
+                }
+                is PaymentSelection.New -> {
+                    stripe.confirmPayment(
+                        this,
+                        ConfirmPaymentIntentParams.createWithPaymentMethodCreateParams(
+                            selection.paymentMethodCreateParams,
+                            args.clientSecret
+                        )
+                    )
+                }
+                null -> TODO("smaskell: Log error state - this should never happen")
             }
         }
     }
